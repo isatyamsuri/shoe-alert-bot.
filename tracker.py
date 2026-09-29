@@ -573,12 +573,6 @@ def v2_main():
     current = {}
     found = set()
 
-    if TEST_TELEGRAM:
-        v2_telegram(
-            "✅ Shoe Alert Bot is connected.\n"
-            "GitHub Actions → Telegram delivery test passed."
-        )
-
     shopify_sites = [
         ("Superkicks", "https://www.superkicks.in"),
         ("Crepdogcrew", "https://www.crepdogcrew.com"),
