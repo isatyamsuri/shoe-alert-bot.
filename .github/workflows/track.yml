@@ -52,3 +52,5 @@ jobs:
             git commit -m "update shoe tracker state [skip ci]"
             git push
           fi
+
+# Manual verification trigger: run the tracker from the beginning.
