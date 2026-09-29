@@ -39,7 +39,6 @@ jobs:
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          TEST_TELEGRAM: ${{ github.event_name == 'push' && '1' || '0' }}
         run: python tracker.py
 
       - name: Save state back to repo
