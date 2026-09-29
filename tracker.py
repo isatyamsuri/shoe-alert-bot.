@@ -211,6 +211,22 @@ V2_HEADERS = {
 def v2_size(value):
     return size_matches(value)
 
+def size_present(text, label):
+    """Check whether a specific tracked size label appears in page text."""
+    s = str(text or "").lower()
+    if label == "30 cm":
+        return re.search(r"(?<![0-9])30(?:\.0)?\s*(?:cm|centimeters?)\b", s) is not None
+    region, number = label.split(" ", 1)
+    if region == "EU":
+        return re.search(rf"\b(?:eu|eur|european)\s*{re.escape(number)}\b", s) is not None
+    if region == "US":
+        return re.search(rf"\b(?:us|u\.s\.)\s*{re.escape(number)}\b", s) is not None
+    if region == "UK":
+        explicit = re.search(rf"\b(?:uk|u\.k\.)\s*{re.escape(number)}\b", s)
+        bare = re.search(rf"(?<![0-9]){re.escape(number)}(?![0-9])", s)
+        return explicit is not None or bare is not None
+    return False
+
 def v2_money(value):
     try:
         return float(str(value).replace(",", "").replace("₹", "").strip())
@@ -482,9 +498,10 @@ def v2_sale_pages(site, listing_urls, current, limit):
     for idx, url in enumerate(product_urls, 1):
         for size in sorted(TARGET_SIZE_LABELS):
             if site == "Adidas India":
+                raw_size = size.split(" ", 1)[1] if " " in size else size
                 target = url + (
                     "&" if "?" in url else "?"
-                ) + f"forceSelSize={size}"
+                ) + f"forceSelSize={raw_size}"
             else:
                 target = url
             html = v2_get(target) or v2_get(target, jina=True)
@@ -515,7 +532,7 @@ def v2_sale_pages(site, listing_urls, current, limit):
             available = False
             if site == "Adidas India":
                 available = (
-                    size_matches(text_content) == size
+                    size_present(text_content, size)
                     and "sold out" not in text_content.lower()
                     and "catch it next time" not in text_content.lower()
                     and "add to bag" in text_content.lower()
