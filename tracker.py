@@ -118,123 +118,37 @@ def size_matches(variant_title: str):
     return size if size in TARGET_SIZES else None
 
 
-def send_telegram(message: str) -> None:
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    try:
-        resp = requests.post(
-            url,
-            data={
-                "chat_id": TELEGRAM_CHAT_ID,
-                "text": message,
-                "parse_mode": "HTML",
-                "disable_web_page_preview": False,
-            },
-            timeout=15,
-        )
-        if resp.status_code != 200:
-            print(f"Telegram error: {resp.status_code} {resp.text}")
-    except Exception as e:
-        print(f"Telegram send failed: {e}")
+def send_telegram(message: str) -> bool:
+    """Send a plain-text Telegram message with retries and useful diagnostics."""
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+        print("[TELEGRAM] Missing TELEGRAM_TOKEN or TELEGRAM_CHAT_ID")
+        return False
 
+    endpoint = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": message,
+        "disable_web_page_preview": False,
+    }
 
-def find_working_base(name: str, candidates: list) -> str | None:
-    """Try each candidate base URL and return the first that serves a real
-    Shopify product feed (i.e. valid JSON with a 'products' key)."""
-    for base in candidates:
-        url = f"{base}/products.json?limit=1"
+    for attempt in range(1, 4):
         try:
-            resp = requests.get(url, headers=HEADERS, timeout=15)
-            if resp.status_code == 200:
-                data = resp.json()
-                if "products" in data:
-                    print(f"[{name}] confirmed working base: {base}")
-                    return base
-            print(f"[{name}] tried {base} -> HTTP {resp.status_code}")
-        except Exception as e:
-            print(f"[{name}] tried {base} -> error: {e}")
-    print(
-        f"[{name}] none of the candidate URLs served a Shopify product feed. "
-        f"This store likely isn't on Shopify (or uses a different setup) — "
-        f"skipping until the correct source is confirmed."
-    )
-    return None
+            response = requests.post(endpoint, data=payload, timeout=20)
+            if response.ok:
+                print(f"[TELEGRAM] sent (attempt {attempt})")
+                return True
 
+            # Telegram's response usually contains the exact reason, e.g.
+            # an invalid chat_id, blocked bot, or malformed message.
+            print(
+                f"[TELEGRAM] HTTP {response.status_code} "
+                f"(attempt {attempt}): {response.text[:1000]}"
+            )
+        except requests.RequestException as exc:
+            print(f"[TELEGRAM] request failed (attempt {attempt}): {exc}")
 
-def check_shopify_site(site: dict, seen: set, newly_seen: set) -> None:
-    base = site["base"]
-    name = site["name"]
-    page = 1
+        if attempt < 3:
+            time.sleep(2 * attempt)
 
-    while True:
-        url = f"{base}/products.json?limit=250&page={page}"
-        try:
-            resp = requests.get(url, headers=HEADERS, timeout=20)
-            resp.raise_for_status()
-            data = resp.json()
-        except Exception as e:
-            print(f"[{name}] fetch failed on page {page}: {e}")
-            break
+    return False
 
-        products = data.get("products", [])
-        if not products:
-            break
-
-        for product in products:
-            title = product.get("title", "Unknown product")
-            handle = product.get("handle", "")
-            product_url = f"{base}/products/{handle}"
-
-            for variant in product.get("variants", []):
-                size = size_matches(variant.get("title", "") or "")
-                if not size or not variant.get("available"):
-                    continue
-
-                try:
-                    price = float(variant.get("price") or 0)
-                except (TypeError, ValueError):
-                    continue
-
-                compare_raw = variant.get("compare_at_price")
-                try:
-                    compare_at = float(compare_raw) if compare_raw else 0
-                except (TypeError, ValueError):
-                    compare_at = 0
-
-                if compare_at and compare_at > price:
-                    discount_pct = round((1 - price / compare_at) * 100)
-                    key = f"{name}:{variant.get('id')}"
-                    newly_seen.add(key)
-
-                    if key not in seen:
-                        msg = (
-                            f"\U0001F514 <b>{name}</b>\n"
-                            f"{title} — UK {size}\n"
-                            f"₹{price:.0f} (was ₹{compare_at:.0f}, {discount_pct}% off)\n"
-                            f"{product_url}"
-                        )
-                        send_telegram(msg)
-
-        page += 1
-        if page > 20:  # safety cap so a bug can't loop forever
-            break
-        time.sleep(1)  # be polite to the store's servers
-
-
-def main():
-    seen = load_state()
-    newly_seen: set = set()
-
-    for site in SHOPIFY_SITES:
-        check_shopify_site(site, seen, newly_seen)
-
-    for site in UNCONFIRMED_SITES:
-        base = find_working_base(site["name"], site["candidates"])
-        if base:
-            check_shopify_site({"name": site["name"], "base": base}, seen, newly_seen)
-
-    save_state(newly_seen)
-    print(f"Done. {len(newly_seen)} discounted items in your sizes currently listed.")
-
-
-if __name__ == "__main__":
-    main()
