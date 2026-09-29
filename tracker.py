@@ -2,7 +2,7 @@
 Shoe Discount Tracker
 ---------------------
 Checks a list of sneaker/shoe stores for discounted stock in your sizes
-(UK 11, 11.5, 12, 12.5, 13) and sends a Telegram alert for anything new.
+(UK 11/11.5/12/12.5/13, US 12.5/13/13.5, EU 47/47.5, and 30 cm) and sends a Telegram alert for anything new.
 
 Confirmed Shopify stores (reliable, hit their public /products.json feed
 directly):
@@ -34,8 +34,18 @@ import requests
 TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
 TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 
-# UK sizes you're tracking
-TARGET_SIZES = {"11", "11.5", "12", "12.5", "13"}
+# Sizes you're tracking. The bot accepts UK, US, EU and foot-length labels.
+TARGET_UK_SIZES = {"11", "11.5", "12", "12.5", "13"}
+TARGET_US_SIZES = {"12.5", "13", "13.5"}
+TARGET_EU_SIZES = {"47", "47.5"}
+TARGET_CM_SIZES = {"30"}
+
+TARGET_SIZE_LABELS = {
+    *(f"UK {x}" for x in TARGET_UK_SIZES),
+    *(f"US {x}" for x in TARGET_US_SIZES),
+    *(f"EU {x}" for x in TARGET_EU_SIZES),
+    "30 cm",
+}
 
 STATE_FILE = Path("state.json")
 
@@ -106,16 +116,30 @@ def save_state(seen: set) -> None:
 
 
 def size_matches(variant_title: str):
-    """
-    Shopify variant titles look like 'UK 11 / Black' or '11.5' etc.
-    Pull the first number-like token out and see if it's one we track.
-    """
-    title = variant_title.lower().replace("uk", "").strip()
-    match = re.search(r"(\d{1,2}(?:\.\d)?)", title)
-    if not match:
-        return None
-    size = match.group(1)
-    return size if size in TARGET_SIZES else None
+    """Return the tracked size label represented by a storefront size string."""
+    s = str(variant_title or "").lower().replace(",", " ").strip()
+    s = re.sub(r"\s+", " ", s)
+
+    if re.search(r"(?<![0-9])30(?:\.0)?\s*(?:cm|centimeters?)\b", s):
+        return "30 cm"
+
+    m = re.search(r"\b(?:eu|eur|european)\s*(47(?:\.5)?)\b", s)
+    if m and m.group(1) in TARGET_EU_SIZES:
+        return f"EU {m.group(1)}"
+
+    m = re.search(r"\b(?:us|u\.s\.)\s*(12(?:\.5)?|13(?:\.5)?)\b", s)
+    if m and m.group(1) in TARGET_US_SIZES:
+        return f"US {m.group(1)}"
+
+    m = re.search(r"\b(?:uk|u\.k\.)\s*(11(?:\.5)?|12(?:\.5)?|13)\b", s)
+    if m and m.group(1) in TARGET_UK_SIZES:
+        return f"UK {m.group(1)}"
+
+    m = re.search(r"(?<![0-9])(11(?:\.5)?|12(?:\.5)?|13)(?![0-9])", s)
+    if m and m.group(1) in TARGET_UK_SIZES:
+        return f"UK {m.group(1)}"
+
+    return None
 
 
 def send_telegram(message: str) -> bool:
@@ -185,9 +209,7 @@ V2_HEADERS = {
 }
 
 def v2_size(value):
-    s = str(value or "").lower().replace("uk", "").replace("size", "").strip()
-    m = re.search(r"(?<!\d)(\d{1,2}(?:\.\d)?)(?!\d)", s)
-    return m.group(1) if m and m.group(1) in TARGET_SIZES else None
+    return size_matches(value)
 
 def v2_money(value):
     try:
@@ -458,7 +480,7 @@ def v2_sale_pages(site, listing_urls, current, limit):
     print(f"[{site}] candidate product URLs: {len(product_urls)}")
 
     for idx, url in enumerate(product_urls, 1):
-        for size in sorted(TARGET_SIZES, key=float):
+        for size in sorted(TARGET_SIZE_LABELS):
             if site == "Adidas India":
                 target = url + (
                     "&" if "?" in url else "?"
@@ -493,12 +515,7 @@ def v2_sale_pages(site, listing_urls, current, limit):
             available = False
             if site == "Adidas India":
                 available = (
-                    re.search(
-                        rf"colou?rs? available in size\s*{re.escape(size)}\b",
-                        text_content,
-                        re.I,
-                    )
-                    is not None
+                    size_matches(text_content) == size
                     and "sold out" not in text_content.lower()
                     and "catch it next time" not in text_content.lower()
                     and "add to bag" in text_content.lower()
@@ -506,8 +523,7 @@ def v2_sale_pages(site, listing_urls, current, limit):
             else:
                 # VNV/Onitsuka expose orderable sizes in the public product page.
                 available = (
-                    re.search(rf"\b{re.escape(size)}\s*UK\b", text_content, re.I)
-                    is not None
+                    size_matches(text_content) == size
                     and "sold out" not in text_content.lower()
                 )
             if not available:
@@ -560,7 +576,7 @@ def v2_alert(found, current, state, initialized):
         pct = round((1 - item["price"] / item["compare"]) * 100)
         v2_telegram(
             f"🔔 {item['name']}\n"
-            f"{item['title']} — UK {item['size']}\n"
+            f"{item['title']} — {item['size']}\n"
             f"₹{item['price']:.0f} "
             f"(was ₹{item['compare']:.0f}, {pct}% off)\n"
             f"{item['url']}"
