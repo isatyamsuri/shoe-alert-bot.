@@ -2,14 +2,18 @@
 Shoe Discount Tracker
 ---------------------
 Checks a list of sneaker/shoe stores for discounted stock in your sizes
-(UK 11, 11.5, 12, 12.5) and sends a Telegram alert for anything new.
+(UK 11, 11.5, 12, 12.5, 13) and sends a Telegram alert for anything new.
 
-Covered automatically (Shopify-based stores expose a public /products.json
-feed, so this is reliable):
+Confirmed Shopify stores (reliable, hit their public /products.json feed
+directly):
     - Superkicks
     - Crepdogcrew
+
+Unconfirmed platform (script auto-tries a few known URL patterns each run
+and logs which one — if any — works):
     - VegNonVeg
     - Onitsuka Tiger India
+    - Limited Edt India
 
 NOT covered here (see README.md "Nike & Adidas" section for why):
     - Nike.in
@@ -31,16 +35,54 @@ TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
 TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 
 # UK sizes you're tracking
-TARGET_SIZES = {"11", "11.5", "12", "12.5"}
+TARGET_SIZES = {"11", "11.5", "12", "12.5", "13"}
 
 STATE_FILE = Path("state.json")
 
 SHOPIFY_SITES = [
     {"name": "Superkicks", "base": "https://www.superkicks.in"},
     {"name": "Crepdogcrew", "base": "https://www.crepdogcrew.com"},
-    {"name": "VegNonVeg", "base": "https://www.vegnonveg.com"},
-    {"name": "Onitsuka Tiger India", "base": "https://www.onitsukatiger.com/in"},
 ]
+
+# Sites where we're not 100% sure of the platform / correct base URL yet.
+# The script tries each candidate base in order and uses the first one
+# that returns a real Shopify product feed. Whichever one works (or if
+# none do) gets printed clearly in the log so we can lock in the right
+# one.
+UNCONFIRMED_SITES = [
+    {
+        "name": "VegNonVeg",
+        "candidates": [
+            "https://www.vegnonveg.com",
+            "https://vegnonveg.com",
+            "https://store.vegnonveg.com",
+            "https://shop.vegnonveg.com",
+        ],
+    },
+    {
+        "name": "Onitsuka Tiger India",
+        "candidates": [
+            "https://www.onitsukatiger.com/en-in",
+            "https://www.onitsukatiger.com/in/en",
+            "https://www.onitsukatiger.com/in",
+            "https://www.onitsukatiger.com",
+        ],
+    },
+    {
+        "name": "Limited Edt India",
+        "candidates": [
+            "https://www.limitededt.in",
+            "https://limitededt.in",
+        ],
+    },
+]
+
+# NOT included — these are large enterprise platforms with active bot
+# protection. A scheduled scraper from GitHub's shared IPs gets blocked
+# almost immediately, so including them would give unreliable/no alerts
+# rather than working ones. See README.md for options.
+#   - Nike.in
+#   - Adidas.co.in
 
 HEADERS = {
     "User-Agent": (
@@ -93,6 +135,29 @@ def send_telegram(message: str) -> None:
             print(f"Telegram error: {resp.status_code} {resp.text}")
     except Exception as e:
         print(f"Telegram send failed: {e}")
+
+
+def find_working_base(name: str, candidates: list) -> str | None:
+    """Try each candidate base URL and return the first that serves a real
+    Shopify product feed (i.e. valid JSON with a 'products' key)."""
+    for base in candidates:
+        url = f"{base}/products.json?limit=1"
+        try:
+            resp = requests.get(url, headers=HEADERS, timeout=15)
+            if resp.status_code == 200:
+                data = resp.json()
+                if "products" in data:
+                    print(f"[{name}] confirmed working base: {base}")
+                    return base
+            print(f"[{name}] tried {base} -> HTTP {resp.status_code}")
+        except Exception as e:
+            print(f"[{name}] tried {base} -> error: {e}")
+    print(
+        f"[{name}] none of the candidate URLs served a Shopify product feed. "
+        f"This store likely isn't on Shopify (or uses a different setup) — "
+        f"skipping until the correct source is confirmed."
+    )
+    return None
 
 
 def check_shopify_site(site: dict, seen: set, newly_seen: set) -> None:
@@ -161,6 +226,11 @@ def main():
 
     for site in SHOPIFY_SITES:
         check_shopify_site(site, seen, newly_seen)
+
+    for site in UNCONFIRMED_SITES:
+        base = find_working_base(site["name"], site["candidates"])
+        if base:
+            check_shopify_site({"name": site["name"], "base": base}, seen, newly_seen)
 
     save_state(newly_seen)
     print(f"Done. {len(newly_seen)} discounted items in your sizes currently listed.")
